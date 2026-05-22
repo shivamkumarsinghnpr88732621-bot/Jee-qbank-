@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>JEE Mains 2026 — Smart Question Bank</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0a0f; color: #e8e8f0; font-family: Georgia, serif; }
+input:focus { outline: 2px solid #7c3aed; }
+button { transition: opacity 0.15s; }
+button:active { opacity: 0.7; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0a0a0f; }
+::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 4px; }
+select option { background: #12121e; color: #e8e8f0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef } = React;
+
+const CHAPTERS = [
+  { name: "Trigonometry", topics: ["Basic Ratios & Identities", "Compound & Multiple Angles", "Multiple Angle Formulas (2A,3A)", "Product-to-Sum & Sum-to-Product", "Conditional Identities (A+B+C=π)", "Max-Min of Trig Expressions", "Trigonometric Equations"] },
+  { name: "Complex Numbers", topics: ["Algebra of Complex Numbers", "Modulus & Argument", "Polar Form & De Moivre's Theorem", "nth Roots of Unity", "Geometry in Complex Plane"] },
+  { name: "Quadratic Equations", topics: ["Nature of Roots & Discriminant", "Sum & Product of Roots", "Location of Roots", "Common Roots", "Max-Min of Quadratic Expressions"] },
+  { name: "Sequences & Series", topics: ["Arithmetic Progression", "Geometric Progression", "AGP (Arithmetico-Geometric)", "Harmonic Progression & AM-GM-HM", "Sum of Special Series"] },
+  { name: "Permutations & Combinations", topics: ["Fundamental Counting Principle", "Permutations with Restrictions", "Combinations & Selection", "Distribution Problems", "Circular Arrangements"] },
+  { name: "Binomial Theorem", topics: ["General Term & Specific Terms", "Middle Term", "Greatest Binomial Coefficient", "Sum of Coefficients", "Applications & Divisibility"] },
+  { name: "Straight Lines", topics: ["Distance & Section Formula", "Equation of Line (all forms)", "Angle Between Lines", "Distance from Point to Line", "Family of Lines"] },
+  { name: "Circles", topics: ["Equation of Circle", "Position of Point/Line", "Tangent & Normal", "Chord of Contact", "Two Circles & Radical Axis"] },
+  { name: "Conic Sections", topics: ["Parabola", "Ellipse", "Hyperbola", "Tangent & Normal to Conics", "Chord Properties"] },
+  { name: "Limits & Derivatives", topics: ["Algebraic Limits", "Trigonometric Limits", "Exponential & Log Limits", "Continuity Intro", "Basic Derivatives"] },
+  { name: "Probability", topics: ["Classical Probability", "Conditional Probability", "Bayes Theorem", "Independent Events", "Binomial Distribution"] },
+  { name: "Sets, Relations & Functions", topics: ["Set Operations", "Types of Relations", "Types of Functions", "Domain & Range", "Composition & Inverse"] },
+];
+
+const DIFF_COLORS = {
+  Easy:   { bg: "#1a3a2a", text: "#4ade80", border: "#166534" },
+  Medium: { bg: "#3a2a0a", text: "#fbbf24", border: "#92400e" },
+  Hard:   { bg: "#3a0a0a", text: "#f87171", border: "#991b1b" },
+};
+
+function App() {
+  const [screen, setScreen] = useState("setup");
+  const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem("gemini_key") || ""; } catch(e){ return ""; } });
+  const [keyInput, setKeyInput] = useState("");
+  const [keyError, setKeyError] = useState("");
+  const [selectedChapter, setSelectedChapter] = useState(null);
+  const [questions, setQuestions] = useState([]);
+  const [progress, setProgress] = useState({ current: 0, total: 0, topic: "", errors: 0 });
+  const [revealedSolutions, setRevealedSolutions] = useState({});
+  const [solvedStatus, setSolvedStatus] = useState({});
+  const [filterDiff, setFilterDiff] = useState("All");
+  const [filterTopic, setFilterTopic] = useState("All");
+  const [expandedQ, setExpandedQ] = useState(null);
+  const [apiError, setApiError] = useState(null);
+  const abortRef = useRef(false);
+  const questionsRef = useRef([]);
+
+  const saveKey = () => {
+    const k = keyInput.trim();
+    if (!k || !k.startsWith("AIza")) { setKeyError("Valid Gemini key 'AIza...' se shuru hoti hai"); return; }
+    setKeyError("");
+    try { localStorage.setItem("gemini_key", k); } catch(e){}
+    setApiKey(k);
+    setScreen("home");
+  };
+
+  const callGemini = async (prompt, key, retries = 2) => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { maxOutputTokens: 8192, temperature: 0.7 }
+            })
+          }
+        );
+        if (!res.ok) {
+          const errText = await res.text();
+          if (attempt === retries) throw new Error(`API ${res.status}: ${errText.slice(0,200)}`);
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        const data = await res.json();
+        const raw = data.candidates[0].content.parts[0].text.trim();
+        const clean = raw.replace(/```json\n?|```/g, "").trim();
+        return JSON.parse(clean);
+      } catch (e) {
+        if (attempt === retries) throw e;
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  };
+
+  const generateQuestions = async (chapter) => {
+    abortRef.current = false;
+    questionsRef.current = [];
+    setSelectedChapter(chapter);
+    setQuestions([]);
+    setRevealedSolutions({});
+    setSolvedStatus({});
+    setFilterDiff("All");
+    setFilterTopic("All");
+    setApiError(null);
+    setScreen("generating");
+
+    const topics = chapter.topics;
+    const qCount = Math.ceil(180 / topics.length);
+    setProgress({ current: 0, total: topics.length, topic: "", errors: 0 });
+    let errorCount = 0;
+
+    for (let i = 0; i < topics.length; i++) {
+      if (abortRef.current) break;
+      const topic = topics[i];
+      setProgress(p => ({ ...p, current: i + 1, topic }));
+
+      const prompt = `You are a JEE Mains expert. Generate exactly ${qCount} JEE Mains style MCQ questions on "${topic}" from "${chapter.name}".
+
+CRITICAL: Return ONLY raw JSON array. No markdown, no backticks, no explanation. Start directly with [
+
+Format:
+[{"qno":1,"topic":"${topic}","difficulty":"Easy","question":"Question text here","options":["A) option1","B) option2","C) option3","D) option4"],"correct":"A","solution":"Step-by-step solution in 3-4 lines","jee_tip":"Key concept or common trap to avoid"}]
+
+Rules:
+- difficulty must be exactly one of: Easy, Medium, Hard
+- correct must be exactly one of: A, B, C, D
+- Distribution: 40% Easy, 45% Medium, 15% Hard
+- Include realistic JEE-style wrong options (common mistakes)
+- All ${qCount} questions must be on different sub-concepts
+- Solutions must be clear and educational`;
+
+      try {
+        const parsed = await callGemini(prompt, apiKey);
+        if (!Array.isArray(parsed)) throw new Error("Not an array");
+        const withIds = parsed.map((q, idx) => ({
+          ...q,
+          id: `${i}-${idx}-${Date.now()}`,
+          qno: questionsRef.current.length + idx + 1,
+          difficulty: ["Easy","Medium","Hard"].includes(q.difficulty) ? q.difficulty : "Medium",
+          correct: ["A","B","C","D"].includes(q.correct) ? q.correct : "A",
+        }));
+        questionsRef.current = [...questionsRef.current, ...withIds];
+        setQuestions([...questionsRef.current]);
+      } catch (e) {
+        errorCount++;
+        setProgress(p => ({ ...p, errors: errorCount }));
+        if (errorCount >= 4 && questionsRef.current.length === 0) {
+          setApiError(e.message);
+          break;
+        }
+      }
+    }
+
+    if (questionsRef.current.length > 0) setScreen("bank");
+    else setScreen("error");
+  };
+
+  const toggleSolution = (id) => setRevealedSolutions(p => ({ ...p, [id]: !p[id] }));
+  const toggleSolved   = (id) => setSolvedStatus(p => ({ ...p, [id]: !p[id] }));
+
+  const filteredQuestions = questions.filter(q => {
+    const diffOk  = filterDiff  === "All" || q.difficulty === filterDiff;
+    const topicOk = filterTopic === "All" || q.topic === filterTopic;
+    return diffOk && topicOk;
+  });
+
+  const solvedCount  = Object.values(solvedStatus).filter(Boolean).length;
+  const uniqueTopics = [...new Set(questions.map(q => q.topic))];
+
+  /* ── SETUP ── */
+  if (screen === "setup") return (
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24}}>
+      <div style={{width:"100%",maxWidth:340,textAlign:"center"}}>
+        <div style={{fontSize:10,letterSpacing:4,color:"#6060a0",textTransform:"uppercase",marginBottom:14,fontFamily:"monospace"}}>JEE MAINS 2026</div>
+        <h1 style={{fontSize:22,color:"#fff",marginBottom:6,fontWeight:700}}>Smart Question Bank</h1>
+        <p style={{color:"#6060a0",fontSize:12,marginBottom:28}}>180 questions per chapter · Powered by Gemini AI (Free)</p>
+
+        <div style={{background:"#12121e",border:"1px solid #2a2a4a",borderRadius:12,padding:"20px 18px",textAlign:"left",marginBottom:12}}>
+          <div style={{fontSize:13,color:"#a78bfa",fontWeight:600,marginBottom:14}}>🔑 Gemini API Key</div>
+
+          <div style={{background:"#0f0f1e",borderRadius:8,padding:"10px 12px",marginBottom:14}}>
+            <div style={{fontSize:11,color:"#6060a0",marginBottom:6,fontWeight:600}}>Key kaise milegi? (2 min)</div>
+            {["1. aistudio.google.com kholो","2. Google account se login karo","3. 'Get API Key' → 'Create API Key'","4. Key copy karo aur neeche paste karo"].map((t,i)=>(
+              <div key={i} style={{fontSize:11,color:"#8080b0",lineHeight:1.9}}>{t}</div>
+            ))}
+            <a href="https://aistudio.google.com/app/apikey" target="_blank"
+              style={{display:"block",marginTop:8,fontSize:11,color:"#a78bfa",textDecoration:"none",background:"#1e1040",border:"1px solid #5a3aaa",borderRadius:6,padding:"5px 10px",textAlign:"center"}}>
+              → aistudio.google.com kholein
+            </a>
+          </div>
+
+          <input
+            type="text"
+            placeholder="AIzaSy... paste karo"
+            value={keyInput}
+            onChange={e => { setKeyInput(e.target.value); setKeyError(""); }}
+            onKeyDown={e => e.key === "Enter" && saveKey()}
+            style={{width:"100%",background:"#1a1a2e",border:`1px solid ${keyError?"#991b1b":"#3a3a5a"}`,borderRadius:8,padding:"10px 12px",color:"#e8e8f0",fontSize:12,fontFamily:"Georgia,serif",outline:"none",marginBottom:keyError?6:10}}
+          />
+          {keyError && <div style={{fontSize:11,color:"#f87171",marginBottom:8}}>{keyError}</div>}
+          <button onClick={saveKey}
+            style={{width:"100%",background:"#1e1040",border:"1px solid #7c3aed",borderRadius:8,padding:"11px",color:"#a78bfa",fontSize:13,cursor:"pointer",fontFamily:"Georgia,serif",fontWeight:600}}>
+            Start →
+          </button>
+        </div>
+
+        <div style={{background:"#0f1a0f",border:"1px solid #1a4a1a",borderRadius:8,padding:"9px 12px",fontSize:11,color:"#4a9a4a"}}>
+          ✅ Free hai — daily 1500 requests, credit card nahi chahiye
+        </div>
+      </div>
+    </div>
+  );
+
+  /* ── HOME ── */
+  if (screen === "home") return (
+    <div style={{minHeight:"100vh",paddingBottom:60}}>
+      <div style={{background:"linear-gradient(135deg,#0f0f1a,#1a0f2e)",borderBottom:"1px solid #2a2a4a",padding:"36px 24px 24px",textAlign:"center"}}>
+        <div style={{fontSize:10,letterSpacing:4,color:"#6060a0",textTransform:"uppercase",marginBottom:10,fontFamily:"monospace"}}>JEE MAINS 2026</div>
+        <h1 style={{fontSize:26,fontWeight:700,color:"#fff",margin:"0 0 6px"}}>Smart Question Bank</h1>
+        <p style={{color:"#8080b0",fontSize:12,margin:0}}>AI-generated JEE-pattern questions · chapter-wise</p>
+      </div>
+
+      <div style={{display:"flex",justifyContent:"center",gap:28,padding:"16px 24px",borderBottom:"1px solid #1a1a2e"}}>
+        {[["12","Chapters"],["~180","Per Chapter"],["100%","JEE Pattern"]].map(([v,l])=>(
+          <div key={l} style={{textAlign:"center"}}>
+            <div style={{fontSize:20,fontWeight:700,color:"#a78bfa"}}>{v}</div>
+            <div style={{fontSize:10,color:"#505070",marginTop:2}}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{padding:"18px 14px 0"}}>
+        <div style={{fontSize:10,letterSpacing:3,color:"#6060a0",textTransform:"uppercase",marginBottom:12,fontFamily:"monospace"}}>Select Chapter</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          {CHAPTERS.map(ch=>(
+            <button key={ch.name} onClick={()=>generateQuestions(ch)}
+              style={{background:"#12121e",border:"1px solid #2a2a3e",borderRadius:10,padding:"13px 10px",color:"#d0d0e8",textAlign:"left",cursor:"pointer",fontSize:12,fontFamily:"Georgia,serif",display:"flex",flexDirection:"column",gap:3}}>
+              <span style={{fontWeight:600}}>{ch.name}</span>
+              <span style={{fontSize:10,color:"#50509a"}}>{ch.topics.length} topics · ~{ch.topics.length*Math.ceil(180/ch.topics.length)} Qs</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{margin:"16px 14px 0",display:"flex",justifyContent:"flex-end"}}>
+        <button onClick={()=>{try{localStorage.removeItem("gemini_key");}catch(e){}setApiKey("");setKeyInput("");setScreen("setup");}}
+          style={{background:"transparent",border:"1px solid #2a2a4a",borderRadius:6,padding:"5px 14px",color:"#505070",fontSize:10,cursor:"pointer",fontFamily:"monospace"}}>
+          🔑 Change API Key
+        </button>
+      </div>
+
+      <div style={{margin:"14px 14px 0",background:"#0f0f1e",border:"1px solid #2a1a3e",borderRadius:10,padding:"12px 14px"}}>
+        <div style={{fontSize:11,color:"#a78bfa",fontWeight:600,marginBottom:5}}>💡 Kaise kaam karta hai</div>
+        <div style={{fontSize:11,color:"#606080",lineHeight:1.8}}>Chapter select karo → Gemini ~3-5 min mein 180 questions generate karta hai → Solve karo → Solution + JEE Tip dekho</div>
+      </div>
+    </div>
+  );
+
+  /* ── GENERATING ── */
+  if (screen === "generating") {
+    const pct = progress.total ? Math.round((progress.current/progress.total)*100) : 0;
+    return (
+      <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24}}>
+        <div style={{width:"100%",maxWidth:360,textAlign:"center"}}>
+          <div style={{fontSize:10,letterSpacing:4,color:"#6060a0",textTransform:"uppercase",marginBottom:18,fontFamily:"monospace"}}>Questions Generate Ho Rahe Hain</div>
+          <h2 style={{fontSize:22,color:"#fff",marginBottom:6}}>{selectedChapter?.name}</h2>
+          <p style={{color:"#6060a0",fontSize:11,marginBottom:28}}>Topic {progress.current} of {progress.total} · please wait karo</p>
+
+          <div style={{background:"#1a1a2e",borderRadius:100,height:8,marginBottom:10,overflow:"hidden"}}>
+            <div style={{background:"linear-gradient(90deg,#7c3aed,#a78bfa)",height:"100%",width:`${pct}%`,transition:"width 0.6s ease",borderRadius:100}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#50508a",marginBottom:22}}>
+            <span>{pct}% complete</span>
+            <span>{questions.length} questions ready</span>
+          </div>
+
+          {progress.topic && (
+            <div style={{background:"#12121e",border:"1px solid #2a2a4a",borderRadius:8,padding:"10px 14px",marginBottom:14}}>
+              <div style={{fontSize:10,color:"#6060a0",marginBottom:4}}>Abhi generate ho raha hai:</div>
+              <div style={{fontSize:12,color:"#a78bfa"}}>{progress.topic}</div>
+            </div>
+          )}
+
+          {progress.errors > 0 && (
+            <div style={{background:"#1a0a0a",border:"1px solid #4a1a1a",borderRadius:8,padding:"8px 12px",marginBottom:14,fontSize:11,color:"#f87171"}}>
+              ⚠️ {progress.errors} topic retry ho raha hai — rukne ki zaroorat nahi
+            </div>
+          )}
+
+          {questions.length > 0 && (
+            <button onClick={()=>{abortRef.current=true;setTimeout(()=>setScreen("bank"),300);}}
+              style={{background:"#1e1040",border:"1px solid #5a3aaa",borderRadius:8,padding:"10px 22px",color:"#a78bfa",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif",marginTop:6}}>
+              Abhi {questions.length} questions dekho →
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  /* ── ERROR ── */
+  if (screen === "error") return (
+    <div style={{minHeight:"100vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,textAlign:"center"}}>
+      <div style={{fontSize:40,marginBottom:16}}>⚠️</div>
+      <h2 style={{color:"#f87171",marginBottom:10,fontSize:18}}>Questions load nahi hue</h2>
+      <div style={{background:"#1a0a0a",border:"1px solid #4a1a1a",borderRadius:10,padding:"14px 16px",marginBottom:20,maxWidth:300,textAlign:"left"}}>
+        {["Internet connection check karo","Gemini API key sahi hai? aistudio.google.com pe verify karo","Agar free quota khatam hua ho toh kal try karo"].map((t,i)=>(
+          <div key={i} style={{fontSize:12,color:"#c0a0a0",lineHeight:1.9}}>• {t}</div>
+        ))}
+      </div>
+      {apiError && <div style={{fontSize:10,color:"#804040",marginBottom:16,maxWidth:320,wordBreak:"break-all"}}>{apiError}</div>}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",justifyContent:"center"}}>
+        <button onClick={()=>setScreen("home")}
+          style={{background:"#1e1040",border:"1px solid #5a3aaa",borderRadius:8,padding:"10px 20px",color:"#a78bfa",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+          ← Chapters
+        </button>
+        <button onClick={()=>selectedChapter&&generateQuestions(selectedChapter)}
+          style={{background:"#1a2a1a",border:"1px solid #2a6a2a",borderRadius:8,padding:"10px 20px",color:"#4ade80",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+          ↺ Retry
+        </button>
+        <button onClick={()=>{try{localStorage.removeItem("gemini_key");}catch(e){}setApiKey("");setKeyInput("");setScreen("setup");}}
+          style={{background:"#1a0a0a",border:"1px solid #4a1a1a",borderRadius:8,padding:"10px 20px",color:"#f87171",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+          Key Change Karo
+        </button>
+      </div>
+    </div>
+  );
+
+  /* ── BANK ── */
+  return (
+    <div style={{minHeight:"100vh"}}>
+      {/* Sticky Header */}
+      <div style={{background:"#0f0f1e",borderBottom:"1px solid #1e1e32",padding:"12px 14px 10px",position:"sticky",top:0,zIndex:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <button onClick={()=>setScreen("home")}
+            style={{background:"transparent",border:"1px solid #2a2a4a",borderRadius:6,padding:"5px 10px",color:"#8080b0",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>← Back</button>
+          <div style={{flex:1}}>
+            <div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{selectedChapter?.name}</div>
+            <div style={{fontSize:10,color:"#50508a"}}>{questions.length} questions · {solvedCount} solved</div>
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <div style={{background:"#1a1a2e",borderRadius:100,height:3,marginBottom:10,overflow:"hidden"}}>
+          <div style={{background:"linear-gradient(90deg,#7c3aed,#4ade80)",height:"100%",width:`${questions.length?(solvedCount/questions.length)*100:0}%`,transition:"width 0.4s",borderRadius:100}}/>
+        </div>
+
+        {/* Filters */}
+        <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:2}}>
+          {["All","Easy","Medium","Hard"].map(d=>(
+            <button key={d} onClick={()=>setFilterDiff(d)}
+              style={{background:filterDiff===d?"#2a1a4a":"transparent",border:`1px solid ${filterDiff===d?"#7c3aed":"#2a2a4a"}`,borderRadius:100,padding:"3px 11px",color:filterDiff===d?"#a78bfa":"#60608a",fontSize:11,cursor:"pointer",whiteSpace:"nowrap",fontFamily:"Georgia,serif"}}>
+              {d}
+            </button>
+          ))}
+          <select value={filterTopic} onChange={e=>setFilterTopic(e.target.value)}
+            style={{background:"#12121e",border:"1px solid #2a2a4a",borderRadius:100,padding:"3px 10px",color:"#8080b0",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif",outline:"none",maxWidth:150}}>
+            <option value="All">All Topics</option>
+            {uniqueTopics.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div style={{display:"flex",borderBottom:"1px solid #1a1a2e"}}>
+        {[["Total",filteredQuestions.length,"#a78bfa"],["Solved",filteredQuestions.filter(q=>solvedStatus[q.id]).length,"#4ade80"],["Remaining",filteredQuestions.filter(q=>!solvedStatus[q.id]).length,"#f87171"]].map(([l,v,c])=>(
+          <div key={l} style={{flex:1,padding:"10px 0",textAlign:"center",borderRight:"1px solid #1a1a2e"}}>
+            <div style={{fontSize:18,fontWeight:700,color:c}}>{v}</div>
+            <div style={{fontSize:10,color:"#404060"}}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Questions */}
+      <div style={{padding:"10px 10px 100px"}}>
+        {filteredQuestions.length === 0 && (
+          <div style={{textAlign:"center",padding:"60px 20px",color:"#404060",fontSize:13}}>Is filter mein koi question nahi</div>
+        )}
+        {filteredQuestions.map(q=>{
+          const dc = DIFF_COLORS[q.difficulty] || DIFF_COLORS.Medium;
+          const solved   = solvedStatus[q.id];
+          const revealed = revealedSolutions[q.id];
+          const expanded = expandedQ === q.id;
+          return (
+            <div key={q.id} style={{background:solved?"#0e1e12":"#10101a",border:`1px solid ${solved?"#1a4a2a":"#1e1e2e"}`,borderRadius:10,marginBottom:8,overflow:"hidden"}}>
+              {/* Question Header */}
+              <div onClick={()=>setExpandedQ(expanded?null:q.id)}
+                style={{padding:"11px 12px",cursor:"pointer",display:"flex",gap:9,alignItems:"flex-start"}}>
+                <div style={{minWidth:28,height:28,borderRadius:6,background:solved?"#1a4a2a":"#1a1a2e",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:solved?"#4ade80":"#50508a",fontWeight:700,fontFamily:"monospace",flexShrink:0}}>
+                  {solved?"✓":q.qno}
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",gap:5,marginBottom:6,flexWrap:"wrap"}}>
+                    <span style={{fontSize:10,padding:"2px 8px",borderRadius:100,background:dc.bg,color:dc.text,border:`1px solid ${dc.border}`}}>{q.difficulty}</span>
+                    <span style={{fontSize:10,padding:"2px 8px",borderRadius:100,background:"#1a1a2e",color:"#6060a0"}}>{q.topic}</span>
+                  </div>
+                  <div style={{fontSize:12,color:"#c8c8e0",lineHeight:1.6}}>{q.question}</div>
+                </div>
+                <div style={{color:"#404060",fontSize:12,flexShrink:0,marginTop:4}}>{expanded?"▲":"▼"}</div>
+              </div>
+
+              {/* Expanded */}
+              {expanded && (
+                <div style={{borderTop:"1px solid #1e1e2e",padding:"12px 12px"}}>
+                  {/* Options */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+                    {q.options?.map((opt,oi)=>{
+                      const letter=["A","B","C","D"][oi];
+                      const isCorrect=revealed&&letter===q.correct;
+                      return (
+                        <div key={oi} style={{padding:"8px 10px",borderRadius:7,fontSize:11,lineHeight:1.5,background:isCorrect?"#1a3a1a":"#12121e",border:`1px solid ${isCorrect?"#2a6a2a":"#2a2a3a"}`,color:isCorrect?"#4ade80":"#a0a0c0"}}>
+                          {opt}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Solution */}
+                  {revealed && (
+                    <div style={{background:"#0c1a14",border:"1px solid #1a4a2a",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                      <div style={{fontSize:11,color:"#4ade80",fontWeight:600,marginBottom:6}}>✓ Correct Answer: {q.correct}</div>
+                      <div style={{fontSize:11,color:"#90c0a0",lineHeight:1.8,marginBottom:q.jee_tip?8:0}}>{q.solution}</div>
+                      {q.jee_tip && (
+                        <div style={{padding:"6px 10px",background:"#1a1a0a",border:"1px solid #4a4a1a",borderRadius:6}}>
+                          <span style={{fontSize:10,color:"#fbbf24",fontWeight:600}}>⚡ JEE Tip: </span>
+                          <span style={{fontSize:10,color:"#c0b060"}}>{q.jee_tip}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Buttons */}
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>toggleSolution(q.id)}
+                      style={{flex:1,background:revealed?"#1a1a2e":"#1e1040",border:`1px solid ${revealed?"#3a3a5a":"#5a3aaa"}`,borderRadius:7,padding:"9px 6px",color:revealed?"#8080b0":"#a78bfa",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                      {revealed?"Hide Solution":"Show Solution"}
+                    </button>
+                    <button onClick={()=>toggleSolved(q.id)}
+                      style={{flex:1,background:solved?"#0e1e12":"#1a1a2e",border:`1px solid ${solved?"#2a6a2a":"#2a2a4a"}`,borderRadius:7,padding:"9px 6px",color:solved?"#4ade80":"#606080",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                      {solved?"✓ Solved":"Mark Solved"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
