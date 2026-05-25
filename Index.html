@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>JEE Mains 2026 — Smart Question Bank (DeepSeek R1)</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0a0f; color: #e8e8f0; font-family: Georgia, serif; }
+input:focus { outline: 2px solid #7c3aed; }
+button { transition: opacity 0.15s; }
+button:active { opacity: 0.7; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0a0a0f; }
+::-webkit-scrollbar-thumb { background: #2a2a4a; border-radius: 4px; }
+select option { background: #12121e; color: #e8e8f0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef } = React;
+
+const CHAPTERS = [
+  { name: "Trigonometry", topics: ["Basic Ratios & Identities", "Compound & Multiple Angles", "Multiple Angle Formulas (2A,3A)", "Product-to-Sum & Sum-to-Product", "Conditional Identities (A+B+C=pi)", "Max-Min of Trig Expressions", "Trigonometric Equations"] },
+  { name: "Complex Numbers", topics: ["Algebra of Complex Numbers", "Modulus & Argument", "Polar Form & De Moivre's Theorem", "nth Roots of Unity", "Geometry in Complex Plane"] },
+  { name: "Quadratic Equations", topics: ["Nature of Roots & Discriminant", "Sum & Product of Roots", "Location of Roots", "Common Roots", "Max-Min of Quadratic Expressions"] },
+  { name: "Sequences & Series", topics: ["Arithmetic Progression", "Geometric Progression", "AGP (Arithmetico-Geometric)", "Harmonic Progression & AM-GM-HM", "Sum of Special Series"] },
+  { name: "Permutations & Combinations", topics: ["Fundamental Counting Principle", "Permutations with Restrictions", "Combinations & Selection", "Distribution Problems", "Circular Arrangements"] },
+  { name: "Binomial Theorem", topics: ["General Term & Specific Terms", "Middle Term", "Greatest Binomial Coefficient", "Sum of Coefficients", "Applications & Divisibility"] },
+  { name: "Straight Lines", topics: ["Distance & Section Formula", "Equation of Line (all forms)", "Angle Between Lines", "Distance from Point to Line", "Family of Lines"] },
+  { name: "Circles", topics: ["Equation of Circle", "Position of Point/Line", "Tangent & Normal", "Chord of Contact", "Two Circles & Radical Axis"] },
+  { name: "Conic Sections", topics: ["Parabola", "Ellipse", "Hyperbola", "Tangent & Normal to Conics", "Chord Properties"] },
+  { name: "Limits & Derivatives", topics: ["Algebraic Limits", "Trigonometric Limits", "Exponential & Log Limits", "Continuity Intro", "Basic Derivatives"] },
+  { name: "Probability", topics: ["Classical Probability", "Conditional Probability", "Bayes Theorem", "Independent Events", "Binomial Distribution"] },
+  { name: "Sets, Relations & Functions", topics: ["Set Operations", "Types of Relations", "Types of Functions", "Domain & Range", "Composition & Inverse"] },
+];
+
+const DIFF_COLORS = {
+  Easy:   { bg: "#1a3a2a", text: "#4ade80", border: "#166534" },
+  Medium: { bg: "#3a2a0a", text: "#fbbf24", border: "#92400e" },
+  Hard:   { bg: "#3a0a0a", text: "#f87171", border: "#991b1b" },
+};
+
+const REVISION_COLORS = {
+  "High Priority":   { bg: "#3a0a0a", text: "#f87171",  border: "#991b1b" },
+  "Medium Priority": { bg: "#3a2a0a", text: "#fbbf24",  border: "#92400e" },
+  "Low Priority":    { bg: "#1a1a3a", text: "#a78bfa",  border: "#4c1d95" },
+};
+
+const BATCH_SIZE = 18;
+
+function App() {
+  const [screen, setScreen]                   = useState("setup");
+  const [apiKey, setApiKey]                   = useState(() => { try { return localStorage.getItem("deepseek_key") || ""; } catch(e){ return ""; } });
+  const [keyInput, setKeyInput]               = useState("");
+  const [keyError, setKeyError]               = useState("");
+  const [selectedChapter, setSelectedChapter] = useState(null);
+  const [questions, setQuestions]             = useState([]);
+  const [progress, setProgress]               = useState({ current: 0, total: 0, topic: "", errors: 0 });
+  const [revealedSolutions, setRevealedSolutions] = useState({});
+  const [solvedStatus, setSolvedStatus]       = useState({});
+  const [filterDiff, setFilterDiff]           = useState("All");
+  const [filterTopic, setFilterTopic]         = useState("All");
+  const [filterRevision, setFilterRevision]   = useState("All");
+  const [expandedQ, setExpandedQ]             = useState(null);
+  const [apiError, setApiError]               = useState(null);
+  const [pdfGenerating, setPdfGenerating]     = useState(false);
+  const [savedChapters, setSavedChapters]     = useState(() => {
+    try { return Object.keys(localStorage).filter(k => k.startsWith("jee_q_")).map(k => k.replace("jee_q_", "")); }
+    catch(e) { return []; }
+  });
+  const abortRef     = useRef(false);
+  const questionsRef = useRef([]);
+
+  /* ── API KEY ── */
+  const saveKey = () => {
+    const k = keyInput.trim();
+    if (!k || !k.startsWith("sk-")) { setKeyError("Valid DeepSeek key 'sk-...' se shuru hoti hai"); return; }
+    setKeyError("");
+    try { localStorage.setItem("deepseek_key", k); } catch(e){}
+    setApiKey(k);
+    setScreen("home");
+  };
+
+  /* ── LOAD / DELETE SAVED ── */
+  const loadSaved = (chapter) => {
+    try {
+      const saved = localStorage.getItem(`jee_q_${chapter.name}`);
+      if (!saved) return;
+      const qs = JSON.parse(saved);
+      setSelectedChapter(chapter);
+      setQuestions(qs);
+      questionsRef.current = qs;
+      setRevealedSolutions({});
+      setSolvedStatus({});
+      setFilterDiff("All");
+      setFilterTopic("All");
+      setFilterRevision("All");
+      setExpandedQ(null);
+      setScreen("bank");
+    } catch(e) { alert("Load error: " + e.message); }
+  };
+
+  const deleteSaved = (chapterName, e) => {
+    e.stopPropagation();
+    if (!confirm(`"${chapterName}" ke saved questions delete karein?`)) return;
+    try {
+      localStorage.removeItem(`jee_q_${chapterName}`);
+      setSavedChapters(prev => prev.filter(c => c !== chapterName));
+    } catch(e) {}
+  };
+
+  /* ── DEEPSEEK R1 CALL ── */
+  const callDeepSeek = async (prompt, key, retries = 2) => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch("https://api.deepseek.com/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${key}`
+          },
+          body: JSON.stringify({
+            model: "deepseek-reasoner",
+            max_tokens: 8000,
+            messages: [{ role: "user", content: prompt }]
+          })
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          if (attempt === retries) throw new Error(`API ${res.status}: ${errText.slice(0, 200)}`);
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        const data = await res.json();
+        let raw = data.choices[0].message.content.trim();
+        raw = raw.replace(/```json\n?|```/g, "").trim();
+        const firstBracket = raw.indexOf("[");
+        if (firstBracket > 0) raw = raw.slice(firstBracket);
+        if (!raw.endsWith("]")) raw = raw + "]";
+        return JSON.parse(raw);
+      } catch (e) {
+        if (attempt === retries) throw e;
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+  };
+
+  /* ── GENERATE ── */
+  const generateQuestions = async (chapter) => {
+    abortRef.current = false;
+    questionsRef.current = [];
+    setSelectedChapter(chapter);
+    setQuestions([]);
+    setRevealedSolutions({});
+    setSolvedStatus({});
+    setFilterDiff("All");
+    setFilterTopic("All");
+    setFilterRevision("All");
+    setApiError(null);
+    setScreen("generating");
+
+    const topics     = chapter.topics;
+    const perTopic   = Math.ceil(190 / topics.length);
+    const batchPerT  = Math.ceil(perTopic / BATCH_SIZE);
+    const totalCalls = topics.length * batchPerT;
+    setProgress({ current: 0, total: totalCalls, topic: "", errors: 0 });
+
+    let callCount  = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < topics.length; i++) {
+      if (abortRef.current) break;
+      const topic    = topics[i];
+      let topicDone  = 0;
+
+      for (let batch = 0; batch < batchPerT; batch++) {
+        if (abortRef.current) break;
+        callCount++;
+        const batchSize = Math.min(BATCH_SIZE, perTopic - topicDone);
+        setProgress(p => ({ ...p, current: callCount, topic: `${topic} (${batch + 1}/${batchPerT})` }));
+
+        const prompt = `You are a senior NTA (National Testing Agency) question paper setter with 20+ years of JEE Mains experience. You have set questions for JEE Mains 2019, 2020, 2021, 2022, 2023, 2024 papers.
+
+Generate exactly ${batchSize} JEE Mains MCQ questions on "${topic}" from "${chapter.name}".
+${batch > 0 ? `IMPORTANT: These must be COMPLETELY DIFFERENT questions from previous batch. No repetition allowed.` : ""}
+
+CRITICAL RULES — NEVER BREAK THESE:
+
+1. DIFFICULTY DISTRIBUTION (STRICT):
+   - Easy: 10% — basic but tricky, tests fundamental concept with a small twist
+   - Medium: 55% — multi-step, tests 2 concepts together, moderate calculation
+   - Hard: 45% — complex, tests 2-3 concepts simultaneously, heavy calculation, conceptual traps
+
+2. QUESTION QUALITY STANDARD:
+   - Every question MUST be at JEE Mains level or ABOVE — NEVER write below JEE Mains difficulty
+   - Medium and Hard questions MUST test 2-3 concepts simultaneously
+   - Use precise NTA-style language — no ambiguity, every word matters
+   - Units must always be mentioned wherever applicable
+   - Include questions modelled on JEE Mains style 2019-2024
+
+3. WRONG OPTIONS MUST BE:
+   - Common calculation mistakes students make
+   - Sign error traps (+/-)
+   - Unit conversion errors
+   - Partial answer traps (answer to intermediate step, not final)
+   - Conceptual confusion between similar-looking formulas
+   - Power of 10 errors (10^3 vs 10^-3)
+   - Approximation traps (pi=3 vs pi=3.14)
+   - Wrong options must look 90% correct to an average student
+
+4. ELIMINATION TECHNIQUE (MANDATORY):
+   - Explain clearly which 2 options can be eliminated FIRST and WHY
+   - Then explain how to choose between the remaining 2
+   - This must teach students smart JEE elimination strategy
+   - Example: "Eliminate B because units do not match. Eliminate C because it ignores the negative sign. Between A and D, D fails for limiting case x=0, so answer is A."
+
+5. MARKS WEIGHTAGE:
+   - Assign based on NTA historical data
+   - Use exactly one of: "High - 3-4 questions expected in JEE Mains (12-16 marks)" or "Medium - 1-2 questions expected in JEE Mains (4-8 marks)" or "Low - 0-1 questions expected in JEE Mains (0-4 marks)"
+
+6. REVISION TAG (assign based on difficulty + exam importance):
+   - "High Priority" = Hard difficulty OR topic tested every year in JEE Mains
+   - "Medium Priority" = Medium difficulty and moderately tested topic
+   - "Low Priority" = Easy difficulty OR rarely tested topic
+
+7. HARD QUESTIONS SPECIFICALLY:
+   - Must require minimum 3-4 steps to solve
+   - Must combine ${chapter.name} with a related concept from another topic
+   - Wrong options must trap students who do only 1-2 steps and stop
+   - Must include at least one elegant shortcut in the solution
+
+8. SOLUTION FORMAT:
+   - Write as: Step 1: ... Step 2: ... Step 3: ...
+   - Show every formula used with its name
+   - Explicitly state which 2-3 concepts are being tested
+   - End with: "Common mistake: students often do X — always remember Y"
+
+RETURN ONLY RAW JSON ARRAY. NO MARKDOWN. NO BACKTICKS. NO EXPLANATION. START DIRECTLY WITH [
+
+FORMAT:
+[{"qno":1,"topic":"${topic}","difficulty":"Hard","concepts_tested":["concept1","concept2","concept3"],"question":"Full precise question text here","options":["A) option1","B) option2","C) option3","D) option4"],"correct":"A","solution":"Step 1: ... Step 2: ... Step 3: ... Common mistake: ...","jee_tip":"Key trap and how to avoid it","elimination_hint":"Eliminate B because reason1. Eliminate C because reason2. Between A and D, choose A because reason3.","marks_weightage":"High - 3-4 questions expected in JEE Mains (12-16 marks)","revision_tag":"High Priority","previous_year_similar":"Similar to JEE Mains 2022 Jan attempt Q14"}]
+
+Generate all ${batchSize} questions now. Every question must be exam-ready. Quality over speed.`;
+
+        try {
+          const parsed = await callDeepSeek(prompt, apiKey);
+          if (!Array.isArray(parsed)) throw new Error("Not an array");
+          const valid = parsed
+            .filter(q => q.question && q.options && q.correct && q.difficulty)
+            .map((q, idx) => ({
+              ...q,
+              id: `${chapter.name}-${i}-${batch}-${idx}`,
+              qno: questionsRef.current.length + idx + 1,
+            }));
+          questionsRef.current = [...questionsRef.current, ...valid];
+          topicDone += valid.length;
+          setQuestions([...questionsRef.current]);
+        } catch (e) {
+          errorCount++;
+          setProgress(p => ({ ...p, errors: errorCount }));
+          if (errorCount >= 4) {
+            setApiError(`Bahut zyada errors: ${e.message}`);
+            setScreen("error");
+            return;
+          }
+        }
+        if (!(i === topics.length - 1 && batch === batchPerT - 1)) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+    }
+
+    // ── Save to localStorage ──
+    try {
+      localStorage.setItem(`jee_q_${chapter.name}`, JSON.stringify(questionsRef.current));
+      setSavedChapters(prev => [...new Set([...prev, chapter.name])]);
+    } catch(e) { console.warn("Save failed:", e); }
+
+    setScreen("bank");
+  };
+
+  const toggleSolution = (id) => setRevealedSolutions(prev => ({ ...prev, [id]: !prev[id] }));
+  const toggleSolved   = (id) => setSolvedStatus(prev => ({ ...prev, [id]: !prev[id] }));
+
+  /* ── PDF DOWNLOAD ── */
+  const downloadPDF = () => {
+    if (!window.jspdf || questions.length === 0) return;
+    setPdfGenerating(true);
+    setTimeout(() => {
+      try {
+        const { jsPDF } = window.jspdf;
+        const doc   = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const pageW = 210, pageH = 297, margin = 15, maxW = pageW - margin * 2;
+        let y = margin;
+
+        const newPage = () => { doc.addPage(); y = margin; };
+        const check   = (need = 10) => { if (y + need > pageH - margin) newPage(); };
+
+        const line = (rgb = [30, 30, 50]) => {
+          check(4);
+          doc.setDrawColor(...rgb);
+          doc.line(margin, y, pageW - margin, y);
+          y += 3;
+        };
+
+        /* COVER */
+        doc.setFillColor(10, 10, 15); doc.rect(0, 0, pageW, pageH, 'F');
+        doc.setFontSize(26); doc.setFont('helvetica','bold'); doc.setTextColor(167,139,250);
+        doc.text('JEE MAINS 2026', pageW/2, 75, { align:'center' });
+        doc.setFontSize(20); doc.setTextColor(232,232,240);
+        doc.text(selectedChapter?.name || '', pageW/2, 93, { align:'center' });
+        doc.setFontSize(11); doc.setFont('helvetica','normal'); doc.setTextColor(128,128,176);
+        doc.text('Smart Question Bank — DeepSeek R1 • NTA Pattern', pageW/2, 108, { align:'center' });
+        doc.setFontSize(10); doc.setTextColor(96,96,144);
+        doc.text(`Total: ${questions.length}  |  Easy: ${questions.filter(q=>q.difficulty==='Easy').length}  Medium: ${questions.filter(q=>q.difficulty==='Medium').length}  Hard: ${questions.filter(q=>q.difficulty==='Hard').length}`, pageW/2, 126, { align:'center' });
+        doc.text(`High Priority: ${questions.filter(q=>q.revision_tag==='High Priority').length}  |  Medium: ${questions.filter(q=>q.revision_tag==='Medium Priority').length}  |  Low: ${questions.filter(q=>q.revision_tag==='Low Priority').length}`, pageW/2, 136, { align:'center' });
+        doc.setFontSize(9); doc.setTextColor(60,60,90);
+        doc.text('Section 1: Questions   |   Section 2: Answer Key   |   Section 3: Solutions', pageW/2, 160, { align:'center' });
+
+        /* SECTION 1 */
+        newPage();
+        doc.setFillColor(10,10,15); doc.rect(0,0,pageW,pageH,'F');
+        doc.setFontSize(15); doc.setFont('helvetica','bold'); doc.setTextColor(167,139,250);
+        doc.text('SECTION 1 — PRACTICE QUESTIONS', pageW/2, y, { align:'center' });
+        y += 10; line([40,30,80]);
+
+        questions.forEach((q) => {
+          check(28);
+          const dc = q.difficulty==='Easy'?[74,222,128]:q.difficulty==='Hard'?[248,113,113]:[251,191,36];
+          const rc = q.revision_tag==='High Priority'?[248,113,113]:q.revision_tag==='Low Priority'?[167,139,250]:[251,191,36];
+
+          doc.setFontSize(9); doc.setFont('helvetica','bold');
+          doc.setTextColor(...dc); doc.text(`Q${q.qno}. [${q.difficulty}]`, margin, y);
+          doc.setTextColor(...rc); doc.text(`[${q.revision_tag||'Medium Priority'}]`, margin+36, y);
+          doc.setTextColor(96,96,144); doc.setFont('helvetica','normal');
+          doc.text(q.topic||'', margin+84, y); y += 5;
+
+          doc.setFontSize(10); doc.setTextColor(220,220,235);
+          const qLines = doc.splitTextToSize(q.question||'', maxW);
+          check(qLines.length*4+18); doc.text(qLines, margin, y); y += qLines.length*4+2;
+
+          q.options?.forEach(opt => {
+            doc.setFontSize(9.5); doc.setTextColor(180,180,210);
+            const ol = doc.splitTextToSize(opt, maxW-5);
+            check(ol.length*4); doc.text(ol, margin+4, y); y += ol.length*4+1;
+          });
+
+          if (q.marks_weightage) {
+            doc.setFontSize(8); doc.setTextColor(80,80,128);
+            doc.text(`Weightage: ${q.marks_weightage}`, margin, y); y += 4;
+          }
+          y += 4; line([20,20,36]);
+        });
+
+        /* SECTION 2 */
+        newPage();
+        doc.setFillColor(10,10,15); doc.rect(0,0,pageW,pageH,'F');
+        doc.setFontSize(15); doc.setFont('helvetica','bold'); doc.setTextColor(167,139,250);
+        doc.text('SECTION 2 — ANSWER KEY', pageW/2, y, { align:'center' });
+        y += 10; line([40,30,80]);
+
+        const cols=5, colW=maxW/cols;
+        let gridStartY = y;
+        questions.forEach((q, idx) => {
+          const col = idx%cols, row = Math.floor(idx/cols);
+          const ax = margin+col*colW, ay = gridStartY+row*7;
+          if (ay+7>pageH-margin && col===0) {
+            newPage(); doc.setFillColor(10,10,15); doc.rect(0,0,pageW,pageH,'F'); gridStartY=y; 
+          }
+          const ac = q.correct==='A'?[74,222,128]:q.correct==='B'?[251,191,36]:q.correct==='C'?[251,146,60]:[167,139,250];
+          doc.setFontSize(8.5); doc.setFont('helvetica','normal'); doc.setTextColor(160,160,200);
+          doc.text(`Q${q.qno}:`, ax, ay);
+          doc.setFont('helvetica','bold'); doc.setTextColor(...ac);
+          doc.text(q.correct||'', ax+10, ay);
+        });
+        y = gridStartY + Math.ceil(questions.length/cols)*7+8;
+
+        /* SECTION 3 */
+        newPage();
+        doc.setFillColor(10,10,15); doc.rect(0,0,pageW,pageH,'F');
+        doc.setFontSize(15); doc.setFont('helvetica','bold'); doc.setTextColor(167,139,250);
+        doc.text('SECTION 3 — DETAILED SOLUTIONS', pageW/2, y, { align:'center' });
+        y += 10; line([40,30,80]);
+
+        questions.forEach((q) => {
+          check(30);
+          doc.setFontSize(10); doc.setFont('helvetica','bold'); doc.setTextColor(74,222,128);
+          doc.text(`Q${q.qno}.  Correct: ${q.correct}`, margin, y); y += 5;
+
+          if (q.concepts_tested?.length) {
+            doc.setFontSize(8); doc.setFont('helvetica','italic'); doc.setTextColor(96,96,160);
+            const cl = doc.splitTextToSize(`Concepts: ${q.concepts_tested.join(' | ')}`, maxW);
+            check(cl.length*3.5); doc.text(cl, margin, y); y += cl.length*3.5+1;
+          }
+          if (q.solution) {
+            doc.setFontSize(9); doc.setFont('helvetica','normal'); doc.setTextColor(160,200,170);
+            const sl = doc.splitTextToSize(q.solution, maxW);
+            check(sl.length*3.8); doc.text(sl, margin, y); y += sl.length*3.8+2;
+          }
+          if (q.elimination_hint) {
+            check(10);
+            doc.setFontSize(8.5); doc.setFont('helvetica','bold'); doc.setTextColor(251,191,36);
+            doc.text('Elimination Strategy:', margin, y); y += 4;
+            doc.setFont('helvetica','normal'); doc.setTextColor(192,172,96);
+            const el = doc.splitTextToSize(q.elimination_hint, maxW);
+            check(el.length*3.5); doc.text(el, margin, y); y += el.length*3.5+2;
+          }
+          if (q.jee_tip) {
+            check(10);
+            doc.setFontSize(8.5); doc.setFont('helvetica','bold'); doc.setTextColor(192,132,252);
+            doc.text('JEE Tip:', margin, y); y += 4;
+            doc.setFont('helvetica','normal'); doc.setTextColor(160,100,200);
+            const tl = doc.splitTextToSize(q.jee_tip, maxW);
+            check(tl.length*3.5); doc.text(tl, margin, y); y += tl.length*3.5+2;
+          }
+          y += 2; line([20,20,36]);
+        });
+
+        doc.save(`JEE_${selectedChapter?.name?.replace(/\s+/g,'_')}_DeepSeekR1.pdf`);
+      } catch(e) { alert("PDF error: " + e.message); }
+      setPdfGenerating(false);
+    }, 100);
+  };
+
+  /* ── DERIVED ── */
+  const uniqueTopics = [...new Set(questions.map(q => q.topic))];
+  const filteredQuestions = questions.filter(q => {
+    if (filterDiff !== "All"     && q.difficulty   !== filterDiff)     return false;
+    if (filterTopic !== "All"    && q.topic        !== filterTopic)    return false;
+    if (filterRevision !== "All" && q.revision_tag !== filterRevision) return false;
+    return true;
+  });
+  const solvedCount = questions.filter(q => solvedStatus[q.id]).length;
+
+  /* ══ SETUP ══ */
+  if (screen === "setup") return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{width:"100%",maxWidth:340}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{fontSize:28,fontWeight:700,color:"#a78bfa",marginBottom:6}}>JEE Smart Bank</div>
+          <div style={{fontSize:12,color:"#50508a"}}>Powered by DeepSeek R1 • NTA Pattern 2026</div>
+        </div>
+        <div style={{background:"#0f0f1e",border:"1px solid #1e1e32",borderRadius:12,padding:20}}>
+          <div style={{fontSize:11,color:"#6060a0",marginBottom:6}}>DeepSeek API Key</div>
+          <input
+            value={keyInput} onChange={e=>setKeyInput(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&saveKey()}
+            placeholder="sk-..."
+            style={{width:"100%",background:"#12121e",border:`1px solid ${keyError?"#991b1b":"#2a2a4a"}`,borderRadius:8,padding:"10px 12px",color:"#e8e8f0",fontSize:13,fontFamily:"monospace",marginBottom:8}}
+          />
+          {keyError && <div style={{fontSize:11,color:"#f87171",marginBottom:8}}>{keyError}</div>}
+          <button onClick={saveKey}
+            style={{width:"100%",background:"linear-gradient(135deg,#7c3aed,#5b21b6)",border:"none",borderRadius:8,padding:"11px",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+            Start →
+          </button>
+          <div style={{fontSize:10,color:"#404060",textAlign:"center",marginTop:10}}>
+            Key milegi: platform.deepseek.com
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  /* ══ HOME ══ */
+  if (screen === "home") return (
+    <div style={{minHeight:"100vh",padding:"16px 12px 80px"}}>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:20,fontWeight:700,color:"#a78bfa",marginBottom:2}}>JEE Smart Bank</div>
+        <div style={{fontSize:11,color:"#50508a"}}>
+          {savedChapters.length > 0 ? `${savedChapters.length} chapters saved ✓` : "Chapter chuno — questions generate honge"}
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        {CHAPTERS.map((ch, i) => {
+          const isSaved = savedChapters.includes(ch.name);
+          return (
+            <div key={i}
+              style={{background:isSaved?"#0e1a14":"#10101a",border:`1px solid ${isSaved?"#1a4a2a":"#1e1e2e"}`,borderRadius:10,padding:"12px 10px"}}
+              onMouseEnter={e=>e.currentTarget.style.borderColor=isSaved?"#2a7a4a":"#7c3aed"}
+              onMouseLeave={e=>e.currentTarget.style.borderColor=isSaved?"#1a4a2a":"#1e1e2e"}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}>
+                <div style={{fontSize:12,fontWeight:600,color:isSaved?"#4ade80":"#c8c8e0"}}>{ch.name}</div>
+                {isSaved && (
+                  <button onClick={(e)=>deleteSaved(ch.name,e)}
+                    style={{background:"transparent",border:"none",color:"#f87171",fontSize:12,cursor:"pointer",padding:"0 2px"}}>✕</button>
+                )}
+              </div>
+              <div style={{fontSize:10,color:"#50508a",marginBottom:7}}>
+                {ch.topics.length} topics • ~{Math.ceil(190/ch.topics.length)*ch.topics.length} questions
+              </div>
+              {isSaved ? (
+                <div style={{display:"flex",gap:5}}>
+                  <button onClick={()=>loadSaved(ch)}
+                    style={{flex:1,background:"#1a4a2a",border:"1px solid #2a7a4a",borderRadius:6,padding:"5px 0",color:"#4ade80",fontSize:10,cursor:"pointer",fontFamily:"Georgia,serif",fontWeight:600}}>
+                    ✓ Load
+                  </button>
+                  <button onClick={()=>generateQuestions(ch)}
+                    style={{flex:1,background:"#1a1a2e",border:"1px solid #3a3a6a",borderRadius:6,padding:"5px 0",color:"#8080c0",fontSize:10,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                    ↺ Regen
+                  </button>
+                </div>
+              ) : (
+                <button onClick={()=>generateQuestions(ch)}
+                  style={{width:"100%",background:"transparent",border:"1px solid #2a2a4a",borderRadius:6,padding:"5px 0",color:"#7060a0",fontSize:10,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                  Generate →
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={()=>{try{localStorage.removeItem("deepseek_key");}catch(e){}setApiKey("");setKeyInput("");setScreen("setup");}}
+        style={{position:"fixed",bottom:20,right:16,background:"#1a0a0a",border:"1px solid #4a1a1a",borderRadius:8,padding:"8px 14px",color:"#f87171",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+        Change Key
+      </button>
+    </div>
+  );
+
+  /* ══ GENERATING ══ */
+  if (screen === "generating") return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{width:"100%",maxWidth:340,textAlign:"center"}}>
+        <div style={{fontSize:16,fontWeight:700,color:"#a78bfa",marginBottom:4}}>{selectedChapter?.name}</div>
+        <div style={{fontSize:12,color:"#50508a",marginBottom:24}}>DeepSeek R1 — JEE questions generate ho rahe hain...</div>
+        <div style={{background:"#1a1a2e",borderRadius:100,height:4,marginBottom:12,overflow:"hidden"}}>
+          <div style={{background:"linear-gradient(90deg,#7c3aed,#4ade80)",height:"100%",width:`${progress.total?(progress.current/progress.total)*100:0}%`,transition:"width 0.5s",borderRadius:100}}/>
+        </div>
+        <div style={{fontSize:12,color:"#c8c8e0",marginBottom:4}}>Call {progress.current}/{progress.total}</div>
+        <div style={{fontSize:11,color:"#50508a",marginBottom:16}}>{progress.topic}</div>
+        <div style={{fontSize:14,color:"#4ade80",marginBottom:4,fontWeight:600}}>{questions.length} questions ready</div>
+        {progress.errors > 0 && <div style={{fontSize:11,color:"#f87171"}}>{progress.errors} errors (auto-retry)</div>}
+        <button onClick={()=>{abortRef.current=true;setScreen("home");}}
+          style={{marginTop:20,background:"transparent",border:"1px solid #3a3a5a",borderRadius:8,padding:"8px 20px",color:"#8080b0",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+
+  /* ══ ERROR ══ */
+  if (screen === "error") return (
+    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{textAlign:"center",maxWidth:300}}>
+        <div style={{fontSize:32,marginBottom:12}}>⚠️</div>
+        <div style={{fontSize:14,color:"#f87171",marginBottom:8}}>Error aaya</div>
+        <div style={{fontSize:11,color:"#60608a",marginBottom:24}}>{apiError}</div>
+        <div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap"}}>
+          <button onClick={()=>setScreen("home")} style={{background:"#1e1040",border:"1px solid #5a3aaa",borderRadius:8,padding:"10px 20px",color:"#a78bfa",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>← Chapters</button>
+          <button onClick={()=>selectedChapter&&generateQuestions(selectedChapter)} style={{background:"#1a2a1a",border:"1px solid #2a6a2a",borderRadius:8,padding:"10px 20px",color:"#4ade80",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>↺ Retry</button>
+          <button onClick={()=>{try{localStorage.removeItem("deepseek_key");}catch(e){}setApiKey("");setKeyInput("");setScreen("setup");}} style={{background:"#1a0a0a",border:"1px solid #4a1a1a",borderRadius:8,padding:"10px 20px",color:"#f87171",fontSize:12,cursor:"pointer",fontFamily:"Georgia,serif"}}>Key Change</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  /* ══ BANK ══ */
+  return (
+    <div style={{minHeight:"100vh"}}>
+      <div style={{background:"#0f0f1e",borderBottom:"1px solid #1e1e32",padding:"12px 14px 10px",position:"sticky",top:0,zIndex:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+          <button onClick={()=>setScreen("home")}
+            style={{background:"transparent",border:"1px solid #2a2a4a",borderRadius:6,padding:"5px 10px",color:"#8080b0",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>← Back</button>
+          <div style={{flex:1}}>
+            <div style={{fontSize:15,fontWeight:700,color:"#fff"}}>{selectedChapter?.name}</div>
+            <div style={{fontSize:10,color:"#50508a"}}>{questions.length} questions · {solvedCount} solved</div>
+          </div>
+          <button onClick={downloadPDF} disabled={pdfGenerating||questions.length===0}
+            style={{background:pdfGenerating?"#1a1a2e":"linear-gradient(135deg,#7c3aed,#5b21b6)",border:"none",borderRadius:8,padding:"8px 14px",color:pdfGenerating?"#8080b0":"#fff",fontSize:11,fontWeight:700,cursor:pdfGenerating?"not-allowed":"pointer",fontFamily:"Georgia,serif"}}>
+            {pdfGenerating?"⏳ PDF...":"⬇ PDF"}
+          </button>
+        </div>
+        <div style={{background:"#1a1a2e",borderRadius:100,height:3,marginBottom:8,overflow:"hidden"}}>
+          <div style={{background:"linear-gradient(90deg,#7c3aed,#4ade80)",height:"100%",width:`${questions.length?(solvedCount/questions.length)*100:0}%`,transition:"width 0.4s",borderRadius:100}}/>
+        </div>
+        <div style={{display:"flex",gap:5,marginBottom:5,overflowX:"auto",paddingBottom:2}}>
+          {["All","Easy","Medium","Hard"].map(d=>(
+            <button key={d} onClick={()=>setFilterDiff(d)}
+              style={{background:filterDiff===d?"#2a1a4a":"transparent",border:`1px solid ${filterDiff===d?"#7c3aed":"#2a2a4a"}`,borderRadius:100,padding:"3px 11px",color:filterDiff===d?"#a78bfa":"#60608a",fontSize:11,cursor:"pointer",whiteSpace:"nowrap",fontFamily:"Georgia,serif"}}>
+              {d}
+            </button>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:2}}>
+          {["All","High Priority","Medium Priority","Low Priority"].map(r=>(
+            <button key={r} onClick={()=>setFilterRevision(r)}
+              style={{background:filterRevision===r?"#2a1a4a":"transparent",border:`1px solid ${filterRevision===r?"#7c3aed":"#2a2a4a"}`,borderRadius:100,padding:"3px 10px",color:filterRevision===r?"#a78bfa":"#60608a",fontSize:10,cursor:"pointer",whiteSpace:"nowrap",fontFamily:"Georgia,serif"}}>
+              {r==="All"?"All Tags":r.replace(" Priority","")}
+            </button>
+          ))}
+          <select value={filterTopic} onChange={e=>setFilterTopic(e.target.value)}
+            style={{background:"#12121e",border:"1px solid #2a2a4a",borderRadius:100,padding:"3px 10px",color:"#8080b0",fontSize:10,cursor:"pointer",fontFamily:"Georgia,serif",outline:"none",maxWidth:130}}>
+            <option value="All">All Topics</option>
+            {uniqueTopics.map(t=><option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div style={{display:"flex",borderBottom:"1px solid #1a1a2e"}}>
+        {[
+          ["Total",   filteredQuestions.length,                                             "#a78bfa"],
+          ["Solved",  filteredQuestions.filter(q=>solvedStatus[q.id]).length,               "#4ade80"],
+          ["High 🔴", filteredQuestions.filter(q=>q.revision_tag==="High Priority").length, "#f87171"],
+          ["Left",    filteredQuestions.filter(q=>!solvedStatus[q.id]).length,              "#fbbf24"],
+        ].map(([l,v,c])=>(
+          <div key={l} style={{flex:1,padding:"10px 0",textAlign:"center",borderRight:"1px solid #1a1a2e"}}>
+            <div style={{fontSize:16,fontWeight:700,color:c}}>{v}</div>
+            <div style={{fontSize:9,color:"#404060"}}>{l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{padding:"10px 10px 100px"}}>
+        {filteredQuestions.length === 0 && (
+          <div style={{textAlign:"center",padding:"60px 20px",color:"#404060",fontSize:13}}>Is filter mein koi question nahi</div>
+        )}
+        {filteredQuestions.map(q => {
+          const dc       = DIFF_COLORS[q.difficulty]      || DIFF_COLORS.Medium;
+          const rc       = REVISION_COLORS[q.revision_tag] || REVISION_COLORS["Medium Priority"];
+          const solved   = solvedStatus[q.id];
+          const revealed = revealedSolutions[q.id];
+          const expanded = expandedQ === q.id;
+          return (
+            <div key={q.id} style={{background:solved?"#0e1e12":"#10101a",border:`1px solid ${solved?"#1a4a2a":"#1e1e2e"}`,borderRadius:10,marginBottom:8,overflow:"hidden"}}>
+              <div onClick={()=>setExpandedQ(expanded?null:q.id)}
+                style={{padding:"11px 12px",cursor:"pointer",display:"flex",gap:9,alignItems:"flex-start"}}>
+                <div style={{minWidth:28,height:28,borderRadius:6,background:solved?"#1a4a2a":"#1a1a2e",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:solved?"#4ade80":"#50508a",fontWeight:700,fontFamily:"monospace",flexShrink:0}}>
+                  {solved?"✓":q.qno}
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",gap:4,marginBottom:6,flexWrap:"wrap"}}>
+                    <span style={{fontSize:10,padding:"2px 8px",borderRadius:100,background:dc.bg,color:dc.text,border:`1px solid ${dc.border}`}}>{q.difficulty}</span>
+                    <span style={{fontSize:10,padding:"2px 8px",borderRadius:100,background:rc.bg,color:rc.text,border:`1px solid ${rc.border}`}}>{q.revision_tag||"Medium Priority"}</span>
+                    <span style={{fontSize:10,padding:"2px 8px",borderRadius:100,background:"#1a1a2e",color:"#6060a0"}}>{q.topic}</span>
+                  </div>
+                  <div style={{fontSize:12,color:"#c8c8e0",lineHeight:1.6}}>{q.question}</div>
+                  {q.marks_weightage && (
+                    <div style={{fontSize:10,color:"#50508a",marginTop:4}}>📊 {q.marks_weightage}</div>
+                  )}
+                </div>
+                <div style={{color:"#404060",fontSize:12,flexShrink:0,marginTop:4}}>{expanded?"▲":"▼"}</div>
+              </div>
+
+              {expanded && (
+                <div style={{borderTop:"1px solid #1e1e2e",padding:"12px 12px"}}>
+                  {q.concepts_tested?.length > 0 && (
+                    <div style={{marginBottom:10,display:"flex",gap:4,flexWrap:"wrap"}}>
+                      {q.concepts_tested.map((c,i)=>(
+                        <span key={i} style={{fontSize:9,padding:"2px 7px",borderRadius:100,background:"#1a1a3a",color:"#8080c0",border:"1px solid #2a2a5a"}}>{c}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+                    {q.options?.map((opt,oi)=>{
+                      const letter=["A","B","C","D"][oi];
+                      const isCorrect=revealed&&letter===q.correct;
+                      return (
+                        <div key={oi} style={{padding:"8px 10px",borderRadius:7,fontSize:11,lineHeight:1.5,background:isCorrect?"#1a3a1a":"#12121e",border:`1px solid ${isCorrect?"#2a6a2a":"#2a2a3a"}`,color:isCorrect?"#4ade80":"#a0a0c0"}}>
+                          {opt}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {revealed && (
+                    <div style={{background:"#0c1a14",border:"1px solid #1a4a2a",borderRadius:8,padding:"10px 12px",marginBottom:10}}>
+                      <div style={{fontSize:11,color:"#4ade80",fontWeight:600,marginBottom:6}}>✓ Correct Answer: {q.correct}</div>
+                      <div style={{fontSize:11,color:"#90c0a0",lineHeight:1.8,marginBottom:8,whiteSpace:"pre-line"}}>{q.solution}</div>
+                      {q.elimination_hint && (
+                        <div style={{padding:"8px 10px",background:"#1a1a0a",border:"1px solid #4a4a0a",borderRadius:6,marginBottom:6}}>
+                          <div style={{fontSize:10,color:"#fbbf24",fontWeight:600,marginBottom:4}}>🎯 Elimination Strategy:</div>
+                          <div style={{fontSize:10,color:"#c0b060",lineHeight:1.7}}>{q.elimination_hint}</div>
+                        </div>
+                      )}
+                      {q.jee_tip && (
+                        <div style={{padding:"6px 10px",background:"#1a0a1a",border:"1px solid #4a1a4a",borderRadius:6}}>
+                          <span style={{fontSize:10,color:"#c084fc",fontWeight:600}}>⚡ JEE Tip: </span>
+                          <span style={{fontSize:10,color:"#a060c0"}}>{q.jee_tip}</span>
+                        </div>
+                      )}
+                      {q.previous_year_similar && (
+                        <div style={{marginTop:6,fontSize:9,color:"#404060"}}>📅 {q.previous_year_similar}</div>
+                      )}
+                    </div>
+                  )}
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>toggleSolution(q.id)}
+                      style={{flex:1,background:revealed?"#1a1a2e":"#1e1040",border:`1px solid ${revealed?"#3a3a5a":"#5a3aaa"}`,borderRadius:7,padding:"9px 6px",color:revealed?"#8080b0":"#a78bfa",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                      {revealed?"Hide Solution":"Show Solution"}
+                    </button>
+                    <button onClick={()=>toggleSolved(q.id)}
+                      style={{flex:1,background:solved?"#0e1e12":"#1a1a2e",border:`1px solid ${solved?"#2a6a2a":"#2a2a4a"}`,borderRadius:7,padding:"9px 6px",color:solved?"#4ade80":"#606080",fontSize:11,cursor:"pointer",fontFamily:"Georgia,serif"}}>
+                      {solved?"✓ Solved":"Mark Solved"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
